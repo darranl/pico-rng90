@@ -32,6 +32,7 @@
 bool _rng90_validate_response(const uint8_t* data);
 bool _rng90_load_info(rng90_context_t* ctx);
 void _rng90_set_crc(uint8_t* data);
+void _rng90_log_message(const char* label, const uint8_t* data, bool is_response);
 
 void rng90_set_i2c_instance(rng90_context_t* ctx, i2c_inst_t* i2c_inst)
 {
@@ -122,21 +123,10 @@ void rng90_init(rng90_context_t* ctx)
         return;
     }
 
-    printf("RNG90 I2C wake/init read %d bytes. Count 0x%02X\n", count, response[0]);
     count += i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, &response[1],
         response[0] < 7 ? response[0] : 7, false);
 
-    // Also maybe better as part of the initialisation and wake routine to
-    // verify the device is functioning correctly.
-    for (int i = 0; i < count; i++)
-    {
-        printf("0x%02X ", response[i]);
-    }
-    printf("\n");
-
-    crc_t crc = rng90_crc16(&response[0], 2);
-    printf("LSB 0x%02X\n", crc & 0xFF);
-    printf("MSB 0x%02X\n", (crc >> 8) & 0xFF);
+    _rng90_log_message("RNG90 Wake Response:", response, true);
 
     if (!_rng90_validate_response(&response[0]))
     {
@@ -210,7 +200,6 @@ void rng90_selftest();
 
 bool _rng90_validate_response(const uint8_t* data)
 {
-    // We know the length from byte 0
     uint8_t length = data[0] - 2; // Exclude the CRC bytes.
 
     crc_t crc = rng90_crc16(&data[0], length);
@@ -218,19 +207,7 @@ bool _rng90_validate_response(const uint8_t* data)
     uint8_t crc_lsb = crc & 0xFF;
     uint8_t crc_msb = (crc >> 8) & 0xFF;
 
-    if (crc_lsb == data[length] && crc_msb == data[length + 1])
-    {
-        printf("RNG90 CRC valid.\n");
-        return true;
-    } else
-    {
-        printf("RNG90 CRC invalid!\n");
-        printf("LSB 0x%02X CRC 0x%02X\n", crc_lsb, data[length]);
-        printf("MSB 0x%02X CRC 0x%02X\n", crc_msb, data[length + 1]);
-
-        return false;
-    }
-
+    return (crc_lsb == data[length] && crc_msb == data[length + 1]);
 }
 
 void _rng90_set_crc(uint8_t* data)
@@ -245,6 +222,58 @@ void _rng90_set_crc(uint8_t* data)
 
     data[payload_len] = (uint8_t)(crc & 0xFF);         // LSB
     data[payload_len + 1] = (uint8_t)((crc >> 8) & 0xFF); // MSB
+}
+
+void _rng90_log_message(const char* label, const uint8_t* data, bool is_response)
+{
+    uint8_t count = data[0];
+
+    printf("%s Count: 0x%02X (%u)\n", label, count, count);
+
+    // For responses with count == 4, byte 1 is a status/error code
+    if (is_response && count == 4)
+    {
+        uint8_t status = data[1];
+        const char* desc;
+        switch (status)
+        {
+            case 0x00: desc = "Success"; break;
+            case 0x03: desc = "Parse Error"; break;
+            case 0x07: desc = "Self Test Error"; break;
+            case 0x08: desc = "Health Test Error"; break;
+            case 0x0F: desc = "Execution Error"; break;
+            case 0x11: desc = "Wake Response"; break;
+            case 0xFF: desc = "CRC/Comm Error"; break;
+            default:   desc = "Unknown"; break;
+        }
+        printf("%s Status: 0x%02X (%s)\n", label, status, desc);
+    }
+    else
+    {
+        printf("%s Data:", label);
+        for (uint8_t i = 1; i <= count - 3; i++)
+        {
+            printf(" 0x%02X", data[i]);
+        }
+        printf("\n");
+    }
+
+    uint8_t payload_len = count - 2;
+    crc_t crc = rng90_crc16(&data[0], payload_len);
+    uint8_t expected_lsb = crc & 0xFF;
+    uint8_t expected_msb = (crc >> 8) & 0xFF;
+    uint8_t actual_lsb = data[count - 2];
+    uint8_t actual_msb = data[count - 1];
+
+    if (expected_lsb == actual_lsb && expected_msb == actual_msb)
+    {
+        printf("%s CRC: 0x%02X 0x%02X (valid)\n", label, actual_lsb, actual_msb);
+    }
+    else
+    {
+        printf("%s CRC: 0x%02X 0x%02X (INVALID - expected 0x%02X 0x%02X)\n",
+               label, actual_lsb, actual_msb, expected_lsb, expected_msb);
+    }
 }
 
 // Maybe not as a distinct function, may capture this data
@@ -262,11 +291,7 @@ bool _rng90_load_info(rng90_context_t* ctx)
     uint8_t info_command[8] = { WORD_ADDRESS_COMMAND, 0x07, COMMAND_INFO, 0x00, 0x00, 0x00, 0x00, 0x00 };
     _rng90_set_crc(&info_command[1]);
 
-    printf("RNG90 Info Command: ");
-    for (size_t i = 0; i < sizeof(info_command); ++i) {
-        printf("0x%02X ", info_command[i]);
-    }
-    printf("\n");
+    _rng90_log_message("RNG90 Info Command:", &info_command[1], false);
 
     int count = i2c_write_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, info_command, 8, false);
     if (count < 0)
@@ -290,8 +315,6 @@ bool _rng90_load_info(rng90_context_t* ctx)
         printf("RNG90 I2C info command read error %d\n", count);
         return false;
     }
-    printf("RNG90 I2C info command length byte read: 0x%02X (%u)\n", length, (unsigned)length);
-
     uint8_t response[length];
     response[0] = length;
     count += i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, &response[1], length - 1, false);
@@ -300,11 +323,8 @@ bool _rng90_load_info(rng90_context_t* ctx)
         printf("RNG90 I2C info command read error %d\n", count);
         return false;
     }
-    printf("RNG90 I2C info command total bytes read so far: %d\n", count);
-    for (int i = 0; i < count; i++) {
-        printf("0x%02X ", response[i]);
-    }
-    printf("\n");
+
+    _rng90_log_message("RNG90 Info Response:", response, true);
 
     if (!_rng90_validate_response(&response[0]))
     {
