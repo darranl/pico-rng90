@@ -17,8 +17,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include "crc.h"
-#include "rng90.h"
+#include "rng90/crc.h"
+#include "rng90/rng90.h"
 
 #define RNG_90_I2C_ADDRESS 0x40
 

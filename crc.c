@@ -14,7 +14,7 @@
  * If  not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "crc.h"
+#include "rng90/crc.h"
 
 uint8_t reflect(uint8_t data)
 {
