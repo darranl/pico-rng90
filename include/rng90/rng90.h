@@ -18,6 +18,7 @@
 #define RNG90_RNG90_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "hardware/i2c.h"
@@ -114,5 +115,17 @@ rng90_selftest_result_t rng90_self_test(rng90_context_t* ctx, rng90_selftest_typ
  * Convert a self-test result to a human-readable string.
  */
 const char* rng90_selftest_result_str(rng90_selftest_result_t result);
+
+/**
+ * Generate random bytes from the RNG90 device.
+ *
+ * Fills buf with len random bytes, calling the device as many times
+ * as necessary (32 bytes per call). If the device is sleeping, it
+ * will be woken automatically. Self-test status is checked to
+ * determine appropriate timing for the first call.
+ *
+ * Returns true on success, false on any communication or CRC error.
+ */
+bool rng90_random(rng90_context_t* ctx, uint8_t* buf, size_t len);
 
 #endif // RNG90_RNG90_H

@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "rng90/crc.h"
 #include "rng90/rng90.h"
@@ -28,6 +29,9 @@
 
 #define COMMAND_INFO 0x30
 #define COMMAND_SELFTEST 0x77
+#define COMMAND_RANDOM 0x16
+
+#define RANDOM_BYTES_PER_CALL 32
 
 // Maximum response size: Random command returns 35 bytes (count + 32 data + 2 CRC)
 #define MAX_RESPONSE_SIZE 35
@@ -171,6 +175,7 @@ void rng90_sleep(rng90_context_t* ctx)
 
     printf("RNG90 I2C sleep wrote %d bytes.\n", count);
     ctx->sleeping = true;
+    ctx->test_complete = false;
 }
 
 // Internal function implementations
@@ -454,4 +459,113 @@ const char* rng90_selftest_result_str(rng90_selftest_result_t result)
         case RNG90_SELFTEST_COMM_ERROR:    return "Communication error";
         default:                           return "Unknown result";
     }
+}
+
+bool rng90_random(rng90_context_t* ctx, uint8_t* buf, size_t len)
+{
+    if (!ctx->initialized)
+    {
+        printf("RNG90 random: not initialized\n");
+        return false;
+    }
+
+    if (!ensure_awake(ctx))
+    {
+        return false;
+    }
+
+    // Check self-test status to determine timing for first call
+    bool first_call_includes_selftest = false;
+    if (!ctx->test_complete)
+    {
+        rng90_selftest_result_t st = rng90_self_test(ctx, RNG90_SELFTEST_STATUS);
+        if (st != RNG90_SELFTEST_PASSED)
+        {
+            printf("RNG90 random: self-tests not yet run, first call will include self-tests\n");
+            first_call_includes_selftest = true;
+        }
+        else
+        {
+            ctx->test_complete = true;
+        }
+    }
+
+    // Build the Random command packet
+    // Wire: [word_addr=0x03] [count=0x1B] [opcode=0x16] [param1] [param2 LSB] [param2 MSB] [20 data bytes] [CRC-LSB] [CRC-MSB]
+    // Count = 1(count) + 1(opcode) + 1(param1) + 2(param2) + 20(data) + 2(CRC) = 27 = 0x1B
+    uint8_t command[28] = { WORD_ADDRESS_COMMAND, 0x1B, COMMAND_RANDOM, 0x00, 0x00, 0x00 };
+    // Bytes 6-25 are the 20 data bytes (already zeroed)
+    // Bytes 26-27 will be CRC
+    set_crc(&command[1]);
+
+    size_t remaining = len;
+    size_t offset = 0;
+    size_t iterations = (len + RANDOM_BYTES_PER_CALL - 1) / RANDOM_BYTES_PER_CALL;
+
+    for (size_t i = 0; i < iterations; i++)
+    {
+        int count = i2c_write_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, command, 28, false);
+        if (count < 0)
+        {
+            printf("RNG90 random write error %d\n", count);
+            return false;
+        }
+
+        if (first_call_includes_selftest && i == 0)
+        {
+            sleep_ms(75); // First call includes self-tests: 57-72 ms
+        }
+        else
+        {
+            sleep_ms(30); // Subsequent calls: 20.2-25.3 ms
+        }
+
+        uint8_t resp_length;
+        count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, &resp_length, 1, true);
+        if (count < 0)
+        {
+            printf("RNG90 random read error %d\n", count);
+            return false;
+        }
+
+        uint8_t response[resp_length];
+        response[0] = resp_length;
+        int read_count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS,
+            &response[1], resp_length - 1, false);
+        if (read_count < 0)
+        {
+            printf("RNG90 random read error %d\n", read_count);
+            return false;
+        }
+
+        log_message("RNG90 Random Response:", response, true);
+
+        if (!validate_response(response))
+        {
+            printf("RNG90 random response CRC invalid\n");
+            return false;
+        }
+
+        // Check for error response (count == 4 means error)
+        if (resp_length == 4)
+        {
+            printf("RNG90 random error response: 0x%02X\n", response[1]);
+            return false;
+        }
+
+        // Copy random bytes to output buffer
+        size_t to_copy = remaining < RANDOM_BYTES_PER_CALL ? remaining : RANDOM_BYTES_PER_CALL;
+        memcpy(&buf[offset], &response[1], to_copy);
+        offset += to_copy;
+        remaining -= to_copy;
+
+        // After first successful random call, self-tests have been run
+        if (!ctx->test_complete)
+        {
+            ctx->test_complete = true;
+            first_call_includes_selftest = false;
+        }
+    }
+
+    return true;
 }
