@@ -6,11 +6,11 @@
  * of the GNU General Public License as published by the Free Software Foundation, either
  * version 3 of the License, or (at your option) any later version.
  *
- * pico-playground is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+ * pico-rng90 is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
  * without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  * See the GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along with pico-playground.
+ * You should have received a copy of the GNU General Public License along with pico-rng90.
  * If  not, see <https://www.gnu.org/licenses/>.
  */
 
@@ -28,11 +28,14 @@
 
 #define COMMAND_INFO 0x30
 
+// Maximum response size: Random command returns 35 bytes (count + 32 data + 2 CRC)
+#define MAX_RESPONSE_SIZE 35
+
 // Internal Function Definitions
-bool _rng90_validate_response(const uint8_t* data);
-bool _rng90_load_info(rng90_context_t* ctx);
-void _rng90_set_crc(uint8_t* data);
-void _rng90_log_message(const char* label, const uint8_t* data, bool is_response);
+static bool validate_response(const uint8_t* data);
+static bool load_info(rng90_context_t* ctx);
+static void set_crc(uint8_t* data);
+static void log_message(const char* label, const uint8_t* data, bool is_response);
 
 void rng90_set_i2c_instance(rng90_context_t* ctx, i2c_inst_t* i2c_inst)
 {
@@ -115,7 +118,7 @@ void rng90_init(rng90_context_t* ctx)
     // the CRC to confirm integrity of the connection.
 
     // Now read back status to confirm a successful wake.
-    uint8_t response[8]; // TODO Could this be longer? e.g. a previous random call (32 Bytes)?
+    uint8_t response[MAX_RESPONSE_SIZE];
     count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, response, 1, true);
     if (count < 0)
     {
@@ -123,12 +126,18 @@ void rng90_init(rng90_context_t* ctx)
         return;
     }
 
-    count += i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, &response[1],
-        response[0] < 7 ? response[0] : 7, false);
+    uint8_t remaining = response[0] < MAX_RESPONSE_SIZE ? response[0] : MAX_RESPONSE_SIZE - 1;
+    int read_count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, &response[1],
+        remaining, false);
+    if (read_count < 0)
+    {
+        printf("RNG90 I2C wake/init read error %d\n", read_count);
+        return;
+    }
 
-    _rng90_log_message("RNG90 Wake Response:", response, true);
+    log_message("RNG90 Wake Response:", response, true);
 
-    if (!_rng90_validate_response(&response[0]))
+    if (!validate_response(&response[0]))
     {
         printf("RNG90 I2C wake/init response CRC invalid\n");
         return;
@@ -136,13 +145,13 @@ void rng90_init(rng90_context_t* ctx)
 
     //   Now we move onto executing the commands we need to learn more about the device.
     //   By reading identification information we further confirm the device is ready for use.
-    _rng90_load_info(ctx);
+    load_info(ctx);
 
     ctx->sleeping = false;
     ctx->initialized = true;
 }
 
-void rng90_sleep(rng90_context_t* ctx) // Immediate?
+void rng90_sleep(rng90_context_t* ctx)
 {
     if (!ctx->initialized || ctx->sleeping)
     {
@@ -162,43 +171,9 @@ void rng90_sleep(rng90_context_t* ctx) // Immediate?
     ctx->sleeping = true;
 }
 
-/*
- * Depending on Clock Divider (which does not seem documented),
- * wake up time could be 1ms 1.2ms, 1.8ms.
- *
- * Maybe commence polling after 1ms.
- */
-void rng90_wake();
-
-/**
- * Maybe more useful for us to trigger a wake / detect the device
- * is listening. Reset leaves the device ready for new commands
- * so not a bad option during init.
- */
-void rng90_reset();
-
-/**
- * All commands should return immediately if init not performed
- * or device is sleeping.
- */
-
-
-// Timing Typical = 20.2, Max = 25.3
-// Timing Typical (After Boot) = 57, Max = 72
-void rng90_random();
-
-
-// Also maybe better as part of the initialisation and wake routine to
-// verify the device is functioning correctly.
-// Handling in init / wake will make timing of random more predictable.
-// Timing (DRBG-SelfTest) Typical = 25.3, Max = 31.8
-// Timing (SHA256-SelfTest)Typical = 11.4, Max = 14.5
-// Timing (Status) Typical = 0.27, Max = 0.4
-void rng90_selftest();
-
 // Internal function implementations
 
-bool _rng90_validate_response(const uint8_t* data)
+static bool validate_response(const uint8_t* data)
 {
     uint8_t length = data[0] - 2; // Exclude the CRC bytes.
 
@@ -210,7 +185,7 @@ bool _rng90_validate_response(const uint8_t* data)
     return (crc_lsb == data[length] && crc_msb == data[length + 1]);
 }
 
-void _rng90_set_crc(uint8_t* data)
+static void set_crc(uint8_t* data)
 {
     if (!data) return;
 
@@ -224,7 +199,7 @@ void _rng90_set_crc(uint8_t* data)
     data[payload_len + 1] = (uint8_t)((crc >> 8) & 0xFF); // MSB
 }
 
-void _rng90_log_message(const char* label, const uint8_t* data, bool is_response)
+static void log_message(const char* label, const uint8_t* data, bool is_response)
 {
     uint8_t count = data[0];
 
@@ -276,12 +251,10 @@ void _rng90_log_message(const char* label, const uint8_t* data, bool is_response
     }
 }
 
-// Maybe not as a distinct function, may capture this data
-// as part of init.
 // Timing Typical = 0.28, Max = 0.40
 // As this function is internal it may be called before the context
 // is marked as initialized.
-bool _rng90_load_info(rng90_context_t* ctx)
+static bool load_info(rng90_context_t* ctx)
 {
     // Command
     // Length 7
@@ -289,9 +262,9 @@ bool _rng90_load_info(rng90_context_t* ctx)
     // Param 1 0x00
     // Param 2 0x00 0x00
     uint8_t info_command[8] = { WORD_ADDRESS_COMMAND, 0x07, COMMAND_INFO, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    _rng90_set_crc(&info_command[1]);
+    set_crc(&info_command[1]);
 
-    _rng90_log_message("RNG90 Info Command:", &info_command[1], false);
+    log_message("RNG90 Info Command:", &info_command[1], false);
 
     int count = i2c_write_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, info_command, 8, false);
     if (count < 0)
@@ -317,16 +290,16 @@ bool _rng90_load_info(rng90_context_t* ctx)
     }
     uint8_t response[length];
     response[0] = length;
-    count += i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, &response[1], length - 1, false);
-    if (count < 0)
+    int read_count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, &response[1], length - 1, false);
+    if (read_count < 0)
     {
-        printf("RNG90 I2C info command read error %d\n", count);
+        printf("RNG90 I2C info command read error %d\n", read_count);
         return false;
     }
 
-    _rng90_log_message("RNG90 Info Response:", response, true);
+    log_message("RNG90 Info Response:", response, true);
 
-    if (!_rng90_validate_response(&response[0]))
+    if (!validate_response(&response[0]))
     {
         printf("RNG90 I2C response CRC invalid\n");
         return false;
