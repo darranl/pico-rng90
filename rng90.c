@@ -56,6 +56,26 @@ bool rng90_is_sleeping(rng90_context_t* ctx)
     return ctx->sleeping;
 }
 
+uint8_t rng90_get_rfu(rng90_context_t* ctx)
+{
+    return ctx->rfu;
+}
+
+uint8_t rng90_get_device_id(rng90_context_t* ctx)
+{
+    return ctx->device_id;
+}
+
+uint8_t rng90_get_silicon_id(rng90_context_t* ctx)
+{
+    return ctx->silicon_id;
+}
+
+uint8_t rng90_get_silicon_rev(rng90_context_t* ctx)
+{
+    return ctx->silicon_rev;
+}
+
 /**
  * For initialisation it is possible we all started at the same time,
  * or if just a software reset the RNG90 could have previously been
@@ -302,9 +322,6 @@ bool _rng90_load_info(rng90_context_t* ctx)
     ctx->device_id = response[2];
     ctx->silicon_id = response[3];
     ctx->silicon_rev = response[4];
-
-    printf("RNG90 Info: rfu=0x%02X device=0x%02X silicon=0x%02X rev=0x%02X\n",
-           ctx->rfu, ctx->device_id, ctx->silicon_id, ctx->silicon_rev);
 
     return true;
 }

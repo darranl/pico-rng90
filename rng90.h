@@ -65,5 +65,24 @@ void rng90_init(rng90_context_t* ctx);
  */
 void rng90_sleep(rng90_context_t* ctx);
 
+/**
+ * Get the RFU (Reserved for Future Use) value from the device info.
+ */
+uint8_t rng90_get_rfu(rng90_context_t* ctx);
+
+/**
+ * Get the Device ID from the device info.
+ */
+uint8_t rng90_get_device_id(rng90_context_t* ctx);
+
+/**
+ * Get the Silicon ID from the device info.
+ */
+uint8_t rng90_get_silicon_id(rng90_context_t* ctx);
+
+/**
+ * Get the Silicon Revision from the device info.
+ */
+uint8_t rng90_get_silicon_rev(rng90_context_t* ctx);
 
 #endif // RNG90_RNG90_H
