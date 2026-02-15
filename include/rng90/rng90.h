@@ -50,6 +50,7 @@ struct rng90_context {
     uint8_t silicon_id;
     uint8_t silicon_rev;
     bool test_complete;
+    bool logging;
 };
 
 typedef struct rng90_context rng90_context_t;
@@ -60,6 +61,14 @@ typedef struct rng90_context rng90_context_t;
  * Additional state on the context will also be rest.
  */
 void rng90_set_i2c_instance(rng90_context_t* ctx, i2c_inst_t* i2c_inst);
+
+/**
+ * Enable or disable diagnostic logging for the RNG90 driver.
+ *
+ * Logging is disabled by default. When enabled, I2C commands,
+ * responses, and status messages are printed to stdout.
+ */
+void rng90_set_logging(rng90_context_t* ctx, bool enabled);
 
 /**
  * Check if the RNG90 context has been initialized.

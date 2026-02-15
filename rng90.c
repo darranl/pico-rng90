@@ -33,6 +33,8 @@
 
 #define RANDOM_BYTES_PER_CALL 32
 
+#define rng90_log(ctx, ...) do { if ((ctx)->logging) printf(__VA_ARGS__); } while (0)
+
 // Maximum response size: Random command returns 35 bytes (count + 32 data + 2 CRC)
 #define MAX_RESPONSE_SIZE 35
 
@@ -40,7 +42,7 @@
 static bool validate_response(const uint8_t* data);
 static bool load_info(rng90_context_t* ctx);
 static void set_crc(uint8_t* data);
-static void log_message(const char* label, const uint8_t* data, bool is_response);
+static void log_message(rng90_context_t* ctx, const char* label, const uint8_t* data, bool is_response);
 static bool ensure_awake(rng90_context_t* ctx);
 
 void rng90_set_i2c_instance(rng90_context_t* ctx, i2c_inst_t* i2c_inst)
@@ -54,6 +56,7 @@ void rng90_set_i2c_instance(rng90_context_t* ctx, i2c_inst_t* i2c_inst)
     ctx->silicon_id = 0x00;
     ctx->silicon_rev = 0x00;
     ctx->test_complete = false;
+    ctx->logging = false;
 }
 
 bool rng90_is_initialized(rng90_context_t* ctx)
@@ -64,6 +67,11 @@ bool rng90_is_initialized(rng90_context_t* ctx)
 bool rng90_is_sleeping(rng90_context_t* ctx)
 {
     return ctx->sleeping;
+}
+
+void rng90_set_logging(rng90_context_t* ctx, bool enabled)
+{
+    ctx->logging = enabled;
 }
 
 uint8_t rng90_get_rfu(rng90_context_t* ctx)
@@ -112,11 +120,11 @@ void rng90_init(rng90_context_t* ctx)
     if (count < 0)
     {
         // Still failed, give up for now.
-        printf("RNG90 I2C wake/init error %d\n", count);
+        rng90_log(ctx, "RNG90 I2C wake/init error %d\n", count);
         return;
     }
 
-    printf("RNG90 I2C wake/init wrote %d bytes.\n", count);
+    rng90_log(ctx, "RNG90 I2C wake/init wrote %d bytes.\n", count);
 
 
     // As the last command was a reset we can read the last response from the device,
@@ -128,7 +136,7 @@ void rng90_init(rng90_context_t* ctx)
     count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, response, 1, true);
     if (count < 0)
     {
-        printf("RNG90 I2C wake/init read error %d\n", count);
+        rng90_log(ctx, "RNG90 I2C wake/init read error %d\n", count);
         return;
     }
 
@@ -137,15 +145,15 @@ void rng90_init(rng90_context_t* ctx)
         remaining, false);
     if (read_count < 0)
     {
-        printf("RNG90 I2C wake/init read error %d\n", read_count);
+        rng90_log(ctx, "RNG90 I2C wake/init read error %d\n", read_count);
         return;
     }
 
-    log_message("RNG90 Wake Response:", response, true);
+    log_message(ctx, "RNG90 Wake Response:", response, true);
 
     if (!validate_response(&response[0]))
     {
-        printf("RNG90 I2C wake/init response CRC invalid\n");
+        rng90_log(ctx, "RNG90 I2C wake/init response CRC invalid\n");
         return;
     }
 
@@ -169,11 +177,11 @@ void rng90_sleep(rng90_context_t* ctx)
 
     if (count < 0)
     {
-        printf("RNG90 I2C sleep error %d\n", count);
+        rng90_log(ctx, "RNG90 I2C sleep error %d\n", count);
         return;
     }
 
-    printf("RNG90 I2C sleep wrote %d bytes.\n", count);
+    rng90_log(ctx, "RNG90 I2C sleep wrote %d bytes.\n", count);
     ctx->sleeping = true;
     ctx->test_complete = false;
 }
@@ -206,8 +214,10 @@ static void set_crc(uint8_t* data)
     data[payload_len + 1] = (uint8_t)((crc >> 8) & 0xFF); // MSB
 }
 
-static void log_message(const char* label, const uint8_t* data, bool is_response)
+static void log_message(rng90_context_t* ctx, const char* label, const uint8_t* data, bool is_response)
 {
+    if (!ctx->logging) return;
+
     uint8_t count = data[0];
 
     printf("%s Count: 0x%02X (%u)\n", label, count, count);
@@ -271,28 +281,28 @@ static bool load_info(rng90_context_t* ctx)
     uint8_t info_command[8] = { WORD_ADDRESS_COMMAND, 0x07, COMMAND_INFO, 0x00, 0x00, 0x00, 0x00, 0x00 };
     set_crc(&info_command[1]);
 
-    log_message("RNG90 Info Command:", &info_command[1], false);
+    log_message(ctx, "RNG90 Info Command:", &info_command[1], false);
 
     int count = i2c_write_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, info_command, 8, false);
     if (count < 0)
     {
-        printf("RNG90 I2C info command write error %d\n", count);
+        rng90_log(ctx, "RNG90 I2C info command write error %d\n", count);
         return false;
     }
     else
     {
-        printf("RNG90 I2C info command wrote %d bytes.\n", count);
+        rng90_log(ctx, "RNG90 I2C info command wrote %d bytes.\n", count);
     }
 
-    printf("RNG90 I2C info command: sleeping 1 ms to wait for response.\n");
+    rng90_log(ctx, "RNG90 I2C info command: sleeping 1 ms to wait for response.\n");
     sleep_ms(1); // Typical 280us, Max 400us
-    printf("RNG90 I2C info command: wait complete.\n");
+    rng90_log(ctx, "RNG90 I2C info command: wait complete.\n");
 
     uint8_t length;
     count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, &length, 1, true);
     if (count < 0)
     {
-        printf("RNG90 I2C info command read error %d\n", count);
+        rng90_log(ctx, "RNG90 I2C info command read error %d\n", count);
         return false;
     }
     uint8_t response[length];
@@ -300,20 +310,20 @@ static bool load_info(rng90_context_t* ctx)
     int read_count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, &response[1], length - 1, false);
     if (read_count < 0)
     {
-        printf("RNG90 I2C info command read error %d\n", read_count);
+        rng90_log(ctx, "RNG90 I2C info command read error %d\n", read_count);
         return false;
     }
 
-    log_message("RNG90 Info Response:", response, true);
+    log_message(ctx, "RNG90 Info Response:", response, true);
 
     if (!validate_response(&response[0]))
     {
-        printf("RNG90 I2C response CRC invalid\n");
+        rng90_log(ctx, "RNG90 I2C response CRC invalid\n");
         return false;
     }
 
     if ((unsigned)length < 7) {
-        printf("RNG90 I2C info response too short: %u\n", (unsigned)length);
+        rng90_log(ctx, "RNG90 I2C info response too short: %u\n", (unsigned)length);
         return false;
     }
 
@@ -344,7 +354,7 @@ static bool ensure_awake(rng90_context_t* ctx)
 
     if (count < 0)
     {
-        printf("RNG90 auto-wake error %d\n", count);
+        rng90_log(ctx, "RNG90 auto-wake error %d\n", count);
         return false;
     }
 
@@ -352,7 +362,7 @@ static bool ensure_awake(rng90_context_t* ctx)
     count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, response, 1, true);
     if (count < 0)
     {
-        printf("RNG90 auto-wake read error %d\n", count);
+        rng90_log(ctx, "RNG90 auto-wake read error %d\n", count);
         return false;
     }
 
@@ -361,15 +371,15 @@ static bool ensure_awake(rng90_context_t* ctx)
         remaining, false);
     if (read_count < 0)
     {
-        printf("RNG90 auto-wake read error %d\n", read_count);
+        rng90_log(ctx, "RNG90 auto-wake read error %d\n", read_count);
         return false;
     }
 
-    log_message("RNG90 Auto-Wake Response:", response, true);
+    log_message(ctx, "RNG90 Auto-Wake Response:", response, true);
 
     if (!validate_response(response))
     {
-        printf("RNG90 auto-wake response CRC invalid\n");
+        rng90_log(ctx, "RNG90 auto-wake response CRC invalid\n");
         return false;
     }
 
@@ -381,7 +391,7 @@ rng90_selftest_result_t rng90_self_test(rng90_context_t* ctx, rng90_selftest_typ
 {
     if (!ctx->initialized)
     {
-        printf("RNG90 self_test: not initialized\n");
+        rng90_log(ctx, "RNG90 self_test: not initialized\n");
         return RNG90_SELFTEST_COMM_ERROR;
     }
 
@@ -396,12 +406,12 @@ rng90_selftest_result_t rng90_self_test(rng90_context_t* ctx, rng90_selftest_typ
     };
     set_crc(&command[1]);
 
-    log_message("RNG90 SelfTest Command:", &command[1], false);
+    log_message(ctx, "RNG90 SelfTest Command:", &command[1], false);
 
     int count = i2c_write_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, command, 8, false);
     if (count < 0)
     {
-        printf("RNG90 self_test write error %d\n", count);
+        rng90_log(ctx, "RNG90 self_test write error %d\n", count);
         return RNG90_SELFTEST_COMM_ERROR;
     }
 
@@ -420,7 +430,7 @@ rng90_selftest_result_t rng90_self_test(rng90_context_t* ctx, rng90_selftest_typ
     count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, &length, 1, true);
     if (count < 0)
     {
-        printf("RNG90 self_test read error %d\n", count);
+        rng90_log(ctx, "RNG90 self_test read error %d\n", count);
         return RNG90_SELFTEST_COMM_ERROR;
     }
 
@@ -430,15 +440,15 @@ rng90_selftest_result_t rng90_self_test(rng90_context_t* ctx, rng90_selftest_typ
         &response[1], length - 1, false);
     if (read_count < 0)
     {
-        printf("RNG90 self_test read error %d\n", read_count);
+        rng90_log(ctx, "RNG90 self_test read error %d\n", read_count);
         return RNG90_SELFTEST_COMM_ERROR;
     }
 
-    log_message("RNG90 SelfTest Response:", response, true);
+    log_message(ctx, "RNG90 SelfTest Response:", response, true);
 
     if (!validate_response(response))
     {
-        printf("RNG90 self_test response CRC invalid\n");
+        rng90_log(ctx, "RNG90 self_test response CRC invalid\n");
         return RNG90_SELFTEST_COMM_ERROR;
     }
 
@@ -465,7 +475,7 @@ bool rng90_random(rng90_context_t* ctx, uint8_t* buf, size_t len)
 {
     if (!ctx->initialized)
     {
-        printf("RNG90 random: not initialized\n");
+        rng90_log(ctx, "RNG90 random: not initialized\n");
         return false;
     }
 
@@ -481,7 +491,7 @@ bool rng90_random(rng90_context_t* ctx, uint8_t* buf, size_t len)
         rng90_selftest_result_t st = rng90_self_test(ctx, RNG90_SELFTEST_STATUS);
         if (st != RNG90_SELFTEST_PASSED)
         {
-            printf("RNG90 random: self-tests not yet run, first call will include self-tests\n");
+            rng90_log(ctx, "RNG90 random: self-tests not yet run, first call will include self-tests\n");
             first_call_includes_selftest = true;
         }
         else
@@ -507,7 +517,7 @@ bool rng90_random(rng90_context_t* ctx, uint8_t* buf, size_t len)
         int count = i2c_write_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, command, 28, false);
         if (count < 0)
         {
-            printf("RNG90 random write error %d\n", count);
+            rng90_log(ctx, "RNG90 random write error %d\n", count);
             return false;
         }
 
@@ -524,7 +534,7 @@ bool rng90_random(rng90_context_t* ctx, uint8_t* buf, size_t len)
         count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, &resp_length, 1, true);
         if (count < 0)
         {
-            printf("RNG90 random read error %d\n", count);
+            rng90_log(ctx, "RNG90 random read error %d\n", count);
             return false;
         }
 
@@ -534,22 +544,22 @@ bool rng90_random(rng90_context_t* ctx, uint8_t* buf, size_t len)
             &response[1], resp_length - 1, false);
         if (read_count < 0)
         {
-            printf("RNG90 random read error %d\n", read_count);
+            rng90_log(ctx, "RNG90 random read error %d\n", read_count);
             return false;
         }
 
-        log_message("RNG90 Random Response:", response, true);
+        log_message(ctx, "RNG90 Random Response:", response, true);
 
         if (!validate_response(response))
         {
-            printf("RNG90 random response CRC invalid\n");
+            rng90_log(ctx, "RNG90 random response CRC invalid\n");
             return false;
         }
 
         // Check for error response (count == 4 means error)
         if (resp_length == 4)
         {
-            printf("RNG90 random error response: 0x%02X\n", response[1]);
+            rng90_log(ctx, "RNG90 random error response: 0x%02X\n", response[1]);
             return false;
         }
 
