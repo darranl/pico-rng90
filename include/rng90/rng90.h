@@ -22,6 +22,24 @@
 
 #include "hardware/i2c.h"
 
+typedef enum {
+    RNG90_SELFTEST_STATUS = 0x00,
+    RNG90_SELFTEST_DRBG   = 0x01,
+    RNG90_SELFTEST_SHA256  = 0x20,
+    RNG90_SELFTEST_FULL    = 0x21
+} rng90_selftest_type_t;
+
+typedef enum {
+    RNG90_SELFTEST_PASSED        = 0x00,
+    RNG90_SELFTEST_DRBG_FAILED   = 0x01,
+    RNG90_SELFTEST_DRBG_NOT_RUN  = 0x02,
+    RNG90_SELFTEST_SHA256_NOT_RUN = 0x10,
+    RNG90_SELFTEST_NEITHER_RUN   = 0x12,
+    RNG90_SELFTEST_SHA256_FAILED = 0x20,
+    RNG90_SELFTEST_BOTH_FAILED   = 0x21,
+    RNG90_SELFTEST_COMM_ERROR    = 0xFF
+} rng90_selftest_result_t;
+
 struct rng90_context {
     i2c_inst_t* i2c_inst;
     bool initialized;
@@ -84,5 +102,17 @@ uint8_t rng90_get_silicon_id(rng90_context_t* ctx);
  * Get the Silicon Revision from the device info.
  */
 uint8_t rng90_get_silicon_rev(rng90_context_t* ctx);
+
+/**
+ * Run or query a self-test on the RNG90 device.
+ *
+ * If the device is sleeping, it will be woken automatically.
+ */
+rng90_selftest_result_t rng90_self_test(rng90_context_t* ctx, rng90_selftest_type_t type);
+
+/**
+ * Convert a self-test result to a human-readable string.
+ */
+const char* rng90_selftest_result_str(rng90_selftest_result_t result);
 
 #endif // RNG90_RNG90_H

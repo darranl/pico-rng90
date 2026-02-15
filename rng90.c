@@ -27,6 +27,7 @@
 #define WORD_ADDRESS_COMMAND 0x03
 
 #define COMMAND_INFO 0x30
+#define COMMAND_SELFTEST 0x77
 
 // Maximum response size: Random command returns 35 bytes (count + 32 data + 2 CRC)
 #define MAX_RESPONSE_SIZE 35
@@ -36,6 +37,7 @@ static bool validate_response(const uint8_t* data);
 static bool load_info(rng90_context_t* ctx);
 static void set_crc(uint8_t* data);
 static void log_message(const char* label, const uint8_t* data, bool is_response);
+static bool ensure_awake(rng90_context_t* ctx);
 
 void rng90_set_i2c_instance(rng90_context_t* ctx, i2c_inst_t* i2c_inst)
 {
@@ -317,4 +319,139 @@ static bool load_info(rng90_context_t* ctx)
     ctx->silicon_rev = response[4];
 
     return true;
+}
+
+static bool ensure_awake(rng90_context_t* ctx)
+{
+    if (!ctx->sleeping)
+    {
+        return true;
+    }
+
+    uint8_t command[1] = { WORD_ADDRESS_RESET };
+    int count = i2c_write_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, command, 1, false);
+
+    if (count < 0)
+    {
+        sleep_ms(2);
+        count = i2c_write_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, command, 1, false);
+    }
+
+    if (count < 0)
+    {
+        printf("RNG90 auto-wake error %d\n", count);
+        return false;
+    }
+
+    uint8_t response[MAX_RESPONSE_SIZE];
+    count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, response, 1, true);
+    if (count < 0)
+    {
+        printf("RNG90 auto-wake read error %d\n", count);
+        return false;
+    }
+
+    uint8_t remaining = response[0] < MAX_RESPONSE_SIZE ? response[0] : MAX_RESPONSE_SIZE - 1;
+    int read_count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, &response[1],
+        remaining, false);
+    if (read_count < 0)
+    {
+        printf("RNG90 auto-wake read error %d\n", read_count);
+        return false;
+    }
+
+    log_message("RNG90 Auto-Wake Response:", response, true);
+
+    if (!validate_response(response))
+    {
+        printf("RNG90 auto-wake response CRC invalid\n");
+        return false;
+    }
+
+    ctx->sleeping = false;
+    return true;
+}
+
+rng90_selftest_result_t rng90_self_test(rng90_context_t* ctx, rng90_selftest_type_t type)
+{
+    if (!ctx->initialized)
+    {
+        printf("RNG90 self_test: not initialized\n");
+        return RNG90_SELFTEST_COMM_ERROR;
+    }
+
+    if (!ensure_awake(ctx))
+    {
+        return RNG90_SELFTEST_COMM_ERROR;
+    }
+
+    uint8_t command[8] = {
+        WORD_ADDRESS_COMMAND, 0x07, COMMAND_SELFTEST,
+        (uint8_t)type, 0x00, 0x00, 0x00, 0x00
+    };
+    set_crc(&command[1]);
+
+    log_message("RNG90 SelfTest Command:", &command[1], false);
+
+    int count = i2c_write_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, command, 8, false);
+    if (count < 0)
+    {
+        printf("RNG90 self_test write error %d\n", count);
+        return RNG90_SELFTEST_COMM_ERROR;
+    }
+
+    uint32_t wait_ms;
+    switch (type)
+    {
+        case RNG90_SELFTEST_STATUS: wait_ms = 1;  break;
+        case RNG90_SELFTEST_DRBG:   wait_ms = 35; break;
+        case RNG90_SELFTEST_SHA256:  wait_ms = 16; break;
+        case RNG90_SELFTEST_FULL:    wait_ms = 50; break;
+        default:                     wait_ms = 50; break;
+    }
+    sleep_ms(wait_ms);
+
+    uint8_t length;
+    count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS, &length, 1, true);
+    if (count < 0)
+    {
+        printf("RNG90 self_test read error %d\n", count);
+        return RNG90_SELFTEST_COMM_ERROR;
+    }
+
+    uint8_t response[length];
+    response[0] = length;
+    int read_count = i2c_read_blocking(ctx->i2c_inst, RNG_90_I2C_ADDRESS,
+        &response[1], length - 1, false);
+    if (read_count < 0)
+    {
+        printf("RNG90 self_test read error %d\n", read_count);
+        return RNG90_SELFTEST_COMM_ERROR;
+    }
+
+    log_message("RNG90 SelfTest Response:", response, true);
+
+    if (!validate_response(response))
+    {
+        printf("RNG90 self_test response CRC invalid\n");
+        return RNG90_SELFTEST_COMM_ERROR;
+    }
+
+    return (rng90_selftest_result_t)response[1];
+}
+
+const char* rng90_selftest_result_str(rng90_selftest_result_t result)
+{
+    switch (result)
+    {
+        case RNG90_SELFTEST_PASSED:        return "All tests passed";
+        case RNG90_SELFTEST_DRBG_FAILED:   return "DRBG self-test failed";
+        case RNG90_SELFTEST_DRBG_NOT_RUN:  return "DRBG self-test not run";
+        case RNG90_SELFTEST_SHA256_NOT_RUN: return "SHA256 self-test not run";
+        case RNG90_SELFTEST_NEITHER_RUN:   return "Neither self-test run";
+        case RNG90_SELFTEST_SHA256_FAILED: return "SHA256 self-test failed";
+        case RNG90_SELFTEST_BOTH_FAILED:   return "DRBG and SHA256 self-tests failed";
+        case RNG90_SELFTEST_COMM_ERROR:    return "Communication error";
+        default:                           return "Unknown result";
+    }
 }
